@@ -1,0 +1,986 @@
+---
+title: 'Machine Learning Project 2 : Segmentation of the French territory in homogeneous
+  climate region using clustering algorithm'
+author: "Thomas Marcoux PÃ©pin and OdÃ©lia Guedj"
+output:
+  pdf_document: default
+  html_notebook: default
+---
+
+
+
+# Loading the data
+
+```{r, echo=F}
+load("weatherdata.Rdata")
+```
+The “weatherdata.Rdata” data set provides temperature and wind temporal evolution for $n= 259$ gridpoints at an hourly sampling rate for a given year ($p= 8760$ hours). 
+
+`temp` denotes the time series for the temperature and `wind` denotes the time series for the wind. The GPSpos variable contains the GPS positions (longitude and latitude) of the time series grid points.
+
+The goal of this project is to find a good segmentation of the french territory based on the temperatures and the wind time series.
+
+# 1. Preliminary 
+
+We chose 3 cities in France: Paris, Reims and Lyon, noted their GPS position, and affected them to the closest observations the name of these cities in the dataframe `Temp` and `Wind`. 
+
+```{r, echo=F}
+ParisLat = 48.51
+ParisLong = 2.20
+
+ReimsLat = 49.25
+ReimsLong = 4.03
+
+LyonLat = 45.75
+LyonLong = 4.9
+```
+
+For every chosen city, we compute the distance to the 259 gridpoints of the map. The closest point is considered as the chosen city.
+
+```{r, echo=F}
+distToParis = (GPSpos$Lon-ParisLong)^2 + (GPSpos$Lat-ParisLat)^2
+distToReims = (GPSpos$Lon-ReimsLong)^2 + (GPSpos$Lat-ReimsLat)^2
+distToLyon = (GPSpos$Lon-LyonLong)^2 + (GPSpos$Lat-LyonLat)^2
+
+paris = which.min(distToParis)
+reims = which.min(distToReims)
+lyon = which.min(distToLyon)
+```
+
+Let's display the time series of temperature and wind for the 3 chosen cities:
+
+```{r, echo=F}
+par(mfrow=c(3,2))
+plot(Temp[paris,], type='l', lwd=2, xlab='time', ylab='Temp', col="steelblue", main = "Temperatures in Paris")
+plot(Wind[paris,], type='l', lwd=2, xlab='time', ylab='Wind', col="steelblue", main = "Wind in Paris")
+
+plot(Temp[reims,], type='l', lwd=2, xlab='time', ylab='Temp', col="orange", main = "Temperatures in Reims")
+plot(Wind[reims,], type='l', lwd=2, xlab='time', ylab='Wind', col="orange", main = "Wind in  Reims")
+
+plot(Temp[lyon,], type='l', lwd=2, xlab='time', ylab='Temp', col="darkgreen", main = "Temperatures in Lyon")
+plot(Wind[lyon,], type='l', lwd=2, xlab='time', ylab='Wind', col="darkgreen", main = "Wind in Lyon")
+```
+Even if the chosen cities are not that close, the evolution of `wind` and `temperature` through time seems to be quite the same. We can also display the map of France with the 259 gridpoints and particularly, the 3 chosen cities.
+
+```{r, echo=F}
+library(ggplot2)
+
+ggplot(as.data.frame(GPSpos), aes(x = GPSpos$Lon, y = GPSpos$Lat)) + 
+  geom_point(size = 3) + 
+  theme_void() +
+  geom_point(x = GPSpos$Lon[paris], y = GPSpos$Lat[paris], colour = "steelblue", size = 6) + 
+  geom_point(x = GPSpos$Lon[reims], y = GPSpos$Lat[reims], colour = "orange", size = 6) + 
+  geom_point(x = GPSpos$Lon[lyon], y = GPSpos$Lat[lyon], colour = "darkgreen", size = 6)+ 
+  annotate(geom="text", x=GPSpos$Lon[paris], y=GPSpos$Lat[paris]+0.6, label="Paris",color="steelblue", size = 10) +
+  annotate(geom="text", x=GPSpos$Lon[reims], y=GPSpos$Lat[reims]+0.6, label="Reims",color="orange", size = 10) +
+  annotate(geom="text", x=GPSpos$Lon[lyon], y=GPSpos$Lat[lyon]+0.6, label="Lyon",color="darkgreen", size = 10) +
+  ggtitle("The 259 pointgrids of the French map with our 3 chosen cities")
+```
+
+# 2. Wind Clustering
+
+This section aims to cluster wind data.
+
+## 2.1 Raw Data
+
+First we work on the raw data which is the hourly meseaurs of the wind (for 8760 hours). We perform a clustering of the 259 points with differents methods: 
+
+* First the k-means algorithm. It's a very common algorithm for clustering data. The idea behind it is very simple. First, we have to choose a number of clusters. Choosing this number is usually is a difficult part but in our case the number of cluster k is fixed to 4. At the initialization state, we randomly choose the k centers of our k clusters. Then we attribute a cluster to each observation by minimizing a certain criterion. When we are working on the raw data we could use the distance between the observation and the clusters: so that we include an observation in his closest cluster.
+
+* Second, the Hierarchical Clustering algorithm: it's quite different of the k-means algorithm because it provides a structured clustering. First they are as many clusters than observations. Then we aggregate the two closest clusters basing on an aggregation rule (to be defined). We repeat this step until a certain criterion is satisfied. The clusters will be different if we use different aggregate rules. The `hclust` function of R provides us 8 different methods of aggregation. We will try some of them and comment the results.
+
+### K-means
+
+We run the k-means algorithm with 4 clusters. We choose to perform the algorithm 50 times (`nstart` = 50), for more stability in the results (since the centers are randomly chosen at the initialisation step).
+
+```{r, results='hide', echo=F}
+set.seed(1)
+wind.kmeans = kmeans(x = Wind, centers = 4, nstart = 50)
+GPSpos$wind.kmeans = as.factor(wind.kmeans$cluster)
+wind.kmeans = as.factor(unlist(wind.kmeans))
+table(GPSpos$wind.kmeans)
+```
+We'll show this clustering on a map at the end of the next part.
+
+### Hierarchical Clustering
+
+#### Overview of three aggregation methods
+
+We chose to perform 3 differents methods of Hierarchical Clustering which are used the most: the ward criterion, the complete criterion and the single criterion.
+
+* The single method proposed by the `hclust` function refers to the single-link criterion: the distance between 2 clusters is the minimum of the distances between all pairs of elements picked in two clusters.
+
+* The complete method refers to the complete-link criterion: the distance between 2 clusters is the maximum of the distances between all pairs of elements picked in two clusters.
+
+* The ward.D criterion consist in grouping clusters such as the raise of within inertia is maximum.
+
+Computing the distance matrix of the wind raw data using the euclidian method: 
+```{r, echo=F}
+d_Wind = dist(Wind, method = "euclidian")
+```
+
+Let display the dendrograms obtained by the different methods:
+```{r, echo=F}
+library(dendextend)
+hclust_methods = c("ward.D", "single", "complete")
+wind_dendlist = dendlist()
+
+for(i in seq_along(hclust_methods)) { 
+  #seq_along function is more consistant then seq function: see: https://stackoverflow.com/questions/13732062/what-are-examples-of-when-seq-along-works-but-seq-produces-unintended-results
+   hc_wind = hclust(d_Wind, method = hclust_methods[i])   
+   wind_dendlist = dendlist(wind_dendlist, as.dendrogram(hc_wind))
+}
+names(wind_dendlist) = hclust_methods
+
+par(mfrow = c(1,3))
+for(i in 1:3) {
+   dend = as.dendrogram(wind_dendlist[[i]])
+   dend = color_branches(dend, k=4,col = rainbow(4) )
+   dend = set(dend, "labels_cex", 0.5)
+   plot(dend,nodePar = list(cex = .0007))
+   title(names(wind_dendlist)[i])
+}
+```
+
+#### With the ward.D method
+
+The ward.D methods is described as the most able to give homegenous clusters. The 3 dendrograms above confirm this hypothesis.
+
+```{r, echo=F, results='hide'}
+set.seed(2)
+wind.hc.wardD = hclust(d_Wind, method = "ward.D")
+GPSpos$wind.hc.wardD = as.factor(cutree(wind.hc.wardD, 4))
+table(GPSpos$wind.hc.wardD)
+```
+
+Displaying the final dendrogram
+```{r, echo=F}
+library(dendextend)
+dend = as.dendrogram(wind.hc.wardD)
+dend = color_branches(dend, k=4,col = rainbow(4) ) 
+dend = set(dend, "labels_cex", 0.05)  # size of the labels
+plot(dend, main = "Dendrogram of the Wind with the ward.D methods and 4 clusters")
+```
+
+### kmeans and HC : Comparison of the clusters
+
+We can display the clustering performed by the k-means algorithm and the HC algorithm (k = 4) on an actual map.
+Since the attribution of a number (1,2,3,4) for each cluster is random, we have to be sure that the same numbers are chosen for the same clusters in each clustering algorithm. That is to say we can compare the clusters more or less a permutation.
+
+Here in our example, the red cluster on the HC algorithm corresponds to the green cluster on the k-means. Let's fix it.
+
+```{r, echo=F, results='hide'}
+GPSpos$wind.kmeans = NULL
+for(i in 1:259){
+  if(wind.kmeans[i] == 1) GPSpos$wind.kmeans4.bis[i] = 2
+  else if(wind.kmeans[i] == 2) GPSpos$wind.kmeans4.bis[i] = 4
+  else if(wind.kmeans[i] == 3) GPSpos$wind.kmeans4.bis[i] = 3
+  else if(wind.kmeans[i] == 4) GPSpos$wind.kmeans4.bis[i] = 1
+}
+GPSpos$wind.kmeans = as.factor(GPSpos$wind.kmeans)
+```
+
+It could be interesting to check if our three cities are on the same clusters for the two methods performed.
+
+```{r, echo=F, results='hide'}
+cities = c("Paris","Reims","Lyon")
+w.cities.kmeans = c(GPSpos$wind.kmeans[paris],GPSpos$wind.kmeans[reims],GPSpos$wind.kmeans[lyon])
+w.cities.HC = c(GPSpos$wind.hc.wardD[paris],GPSpos$wind.hc.wardD[reims],GPSpos$wind.hc.wardD[lyon])
+rbind(cities, w.cities.kmeans, w.cities.HC)
+```
+
+
+```{r, echo=F}
+library(cowplot)
+ theme_set(theme_cowplot())
+ 
+plot_grid(
+ggplot(as.data.frame(GPSpos), aes(x = GPSpos$Lon, y = GPSpos$Lat, color = GPSpos$wind.hc.wardD)) + 
+  geom_point(size = 5) + scale_color_manual(values = rainbow(4)) + 
+  guides(color= guide_legend(title = "Clusters")) + 
+  ggtitle("HC with 4 groups") +xlab("") + ylab("") + 
+  annotate(geom="text", x=GPSpos$Lon[paris], y=GPSpos$Lat[paris], label="P",color="black", size = 4)+ 
+  annotate(geom="text", x=GPSpos$Lon[reims], y=GPSpos$Lat[reims], label="R",color="black", size = 4)+ 
+  annotate(geom="text", x=GPSpos$Lon[lyon], y=GPSpos$Lat[lyon], label="L",color="black", size = 4)
+,
+ggplot(as.data.frame(GPSpos), aes(x = GPSpos$Lon, y = GPSpos$Lat, color = GPSpos$wind.kmeans)) + 
+  geom_point(size = 5)+ scale_color_manual(values = rainbow(4)) + 
+  guides(color= guide_legend(title = "Clusters")) + 
+  ggtitle("k-means with 4 groups")+xlab("") + ylab("")+ 
+  annotate(geom="text", x=GPSpos$Lon[paris], y=GPSpos$Lat[paris], label="P",color="black", size = 4)+ 
+  annotate(geom="text", x=GPSpos$Lon[reims], y=GPSpos$Lat[reims], label="R",color="black", size = 4)+ 
+  annotate(geom="text", x=GPSpos$Lon[lyon], y=GPSpos$Lat[lyon], label="L",color="black", size = 4)
+)
+
+```
+
+The 4 clusters chosen by our algorithms are quite the same. Moreover, we can deduce French weather information from those choices. We can clearly see that cluster 3 is associated with mediterranean climate while cluster 1 is associated with the North part of France, cluster 2 is part of France under the continental climate and cluster 4 is associated with the South part of France.
+
+The algorithms clusters differ on certain points of the data. Yet, the two clustering results are both interpretable.
+
+## 2.2 Principal Component Analysis
+
+We want to extract the most important features in order to perform the same clustering algorithms than above on a smallest dataset. The question is: are we able to get the same results with less variables ?
+
+```{r, echo=F}
+library(FactoMineR)
+library(factoextra)
+```
+
+```{r}
+res.pca.wind = PCA(Wind, graph = F)
+```
+
+```{r, echo=F}
+eig.val.wind = get_eigenvalue(res.pca.wind)
+p95 = which(eig.val.wind[,3]>95)
+ggplot(as.data.frame(eig.val.wind), aes(x = 1:length(eig.val.wind[,3]), y = eig.val.wind[,3])) + geom_point() +
+  xlab("Number of component") + ylab("% of variance explained") +
+  geom_vline(xintercept = p95[1], color = "red") + theme_bw()+
+  ggtitle("Cumulative curve of variance \n explained by the PCA on the Wind raw data")+
+  annotate(geom = "text", y = -10, x = p95[1]+5, label = p95[1])
+```
+In order to get 95 $\%$ of the variance explained we have to keep the first 47 principal components. So our new dataset has p = 47 features.
+
+## 2.3 Clustering on the PCA 
+```{r}
+print(eig.val.wind[1:10,3])
+```
+
+If we keep 10 components we'd get $76.29 \%$ of explained variance.
+
+### Hierarchical Clustering
+
+Since we used the PCA function from the FactoMineR package, it's easier to also use a fonction from this package to performe the Hierarchical Clustering : the HCPC function. 
+
+```{r}
+wind.hc.wardD.pca = HCPC(PCA(Wind, ncp = 10, graph = F, scale.unit = F), nb.clust = 4, method = "ward", graph = F)
+wind.hc.wardD.pca =  wind.hc.wardD.pca$data.clust[,8761]
+```
+
+Again, we have to make sure that the figures used for the clusters are the same for the HC algorithm on the PCA.
+
+```{r, echo=F}
+GPSpos$wind.hc.wardD.pca = NULL
+for(i in 1:259){
+  if(wind.hc.wardD.pca[i] == 4)
+    GPSpos$wind.hc.wardD.pca[i] = 1
+  else if(wind.hc.wardD.pca[i] == 3)
+    GPSpos$wind.hc.wardD.pca[i] = 2
+  if(wind.hc.wardD.pca[i] == 2)
+    GPSpos$wind.hc.wardD.pca[i] = 4
+  if(wind.hc.wardD.pca[i] == 1)
+    GPSpos$wind.hc.wardD.pca[i] = 3
+}
+GPSpos$wind.hc.wardD.pca = as.factor(GPSpos$wind.hc.wardD.pca)
+
+```
+
+```{r}
+table(PCA = GPSpos$wind.hc.wardD.pca, "raw data" = GPSpos$wind.hc.wardD)
+```
+
+Since we only kept the first 10 components, the results of the two clusterings (on the raw data and on the results of the PCA) can not be the same.
+The interesting question is to know how "wrong"" is the clustering basing on the results of the PCA ? In order to know that, we sum up the number of mistakes (meaning the number of differences between the 2 clusterings) and we divide it by 259 which is the total number of raws in our initial data set.
+
+```{r}
+(length(which(GPSpos$wind.hc.wardD.pca != GPSpos$wind.hc.wardD))/ 229)*100
+```
+
+So, we observe an "error" of $19.2 \%$. But this "error" is calculated on the assumption that the HC performed on the raw data is more close to the "truth" (that is to say the right segmentation of France) that the HC performed in the raw data, so we should analyse this number carrefully. The only thing we can say about it is : with significantly less signal (10 components over 259) we get around $80 \%$ of the results obtained with the entire information.
+
+
+```{r, echo=F, results='hide'}
+w.cities.HC.pca = c(GPSpos$wind.hc.wardD.pca[paris],GPSpos$wind.hc.wardD.pca[reims],GPSpos$wind.hc.wardD.pca[lyon])
+rbind(cities, w.cities.HC, w.cities.HC.pca)
+```
+```{r, echo=F}
+plot_grid(
+ggplot(as.data.frame(GPSpos), aes(x = GPSpos$Lon, y = GPSpos$Lat, color = GPSpos$wind.hc.wardD.pca)) + 
+  geom_point(size = 5) + scale_color_manual(values = rainbow(4)) + 
+  guides(color= guide_legend(title = "Clusters")) + 
+  ggtitle("HC on the PCA results (ncp = 10)") +xlab("") + ylab("") + 
+  annotate(geom="text", x=GPSpos$Lon[paris], y=GPSpos$Lat[paris], label="P",color="black", size = 5)+ 
+  annotate(geom="text", x=GPSpos$Lon[reims], y=GPSpos$Lat[reims], label="R",color="black", size = 5)+ 
+  annotate(geom="text", x=GPSpos$Lon[lyon], y=GPSpos$Lat[lyon], label="L",color="black", size = 5)
+,
+ggplot(as.data.frame(GPSpos), aes(x = GPSpos$Lon, y = GPSpos$Lat, color = GPSpos$wind.hc.wardD)) + 
+  geom_point(size = 5) + scale_color_manual(values = rainbow(4)) + 
+  guides(color= guide_legend(title = "Clusters")) + 
+  ggtitle("HC on the raw data") +xlab("") + ylab("") + 
+  annotate(geom="text", x=GPSpos$Lon[paris], y=GPSpos$Lat[paris], label="P",color="black", size = 5)+ 
+  annotate(geom="text", x=GPSpos$Lon[reims], y=GPSpos$Lat[reims], label="R",color="black", size = 5)+ 
+  annotate(geom="text", x=GPSpos$Lon[lyon], y=GPSpos$Lat[lyon], label="L",color="black", size = 5)
+)
+```
+There we observe the same results than with the previous method. The clusters are quite the same.
+* Cluster 1: North and West part of France
+* Cluster 2: Center and East part of France
+* Cluster 3: Mediterranean climate
+* Cluster 4: Southern part of France where the climate might not be mediterranean
+
+### K-means
+
+```{r, echo=F, results='hide'}
+dim(PCA(Wind, ncp = 10, graph = F, scale.unit = F)$ind$coord[,1:10])
+```
+
+```{r, echo=F, results='hide'}
+set.seed(787)
+wind.kmeans.pca = kmeans(PCA(Wind, ncp = 10, graph = F, scale.unit = F)$ind$coord[,1:10], centers = 4, nstart = 50)
+GPSpos$wind.kmeans.pca = as.factor(wind.kmeans.pca$cluster)
+table(GPSpos$wind.kmeans.pca)
+```
+
+## 2.4 Conclusion
+
+In this section, for our segmentation of the French territory, we used 2 algorithms. First on the raw data and second on the 10 first components of a Principal Composant Analysis.
+Our 4 segmentation gives globally the same results. Since we chose to make 4 groups, it seems that they correspond to 4 zones with very different climates: North-West with oceanic climate, North-East with continental climate, South-West with oceanic climate too but hotter than North-West region and South-East for the medditeranean climate.
+The South-East and the South-West clusters are the ones with the most variations. Before making any hypothesis about this results, we have to check if they are the same when we base our study on the temperature data instead of the wind data.
+
+# 3. Temparature clustering
+
+This section aims to cluster temperature data.
+
+## 3.1 Raw data
+
+In this part we study and compare the use of k-means and Hierarchical Clustering to provide a segmentation into 4 groups of the temperature using the raw time series.
+
+### K-means
+
+```{r, results='hide'}
+set.seed(3)
+temp.kmeans = kmeans(x = Temp, centers = 4, nstart = 50)
+temp.kmeans = as.factor(temp.kmeans$cluster)
+```
+```{r, echo=F, results='hide'}
+table(temp.kmeans)
+```
+
+### Hierarchical clustering with the ward.D method
+
+Computing the distance matrix of the temperature raw data using the euclidian method: 
+```{r, echo=F, results='hide'}
+d_temp = dist(Temp, method = "euclidian")
+```
+
+```{r, echo=F, results='hide'}
+set.seed(243)
+temp.hc.wardD = hclust(d_temp, method = "ward.D")
+GPSpos$temp.hc.wardD = as.factor(cutree(temp.hc.wardD, 4))
+table(GPSpos$temp.hc.wardD)
+```
+
+Displaying the final dendrogram
+```{r, echo=F}
+dend2 = as.dendrogram(temp.hc.wardD)
+dend2 = color_branches(dend2, k=4,col = rainbow(4) ) 
+dend2 = set(dend2, "labels_cex", 0.05)  # size of the labels
+plot(dend2, main = "Dendrogram of the Temperatures with the ward.D method and 4 clusters")
+```
+
+### kmeans and HC : Comparison of the clusters
+
+```{r, echo=F, results='hide'}
+GPSpos$temp.kmeans = NULL
+for(i in 1:259){
+  if(temp.kmeans[i] == 1) GPSpos$temp.kmeans[i] = 3
+  else if(temp.kmeans[i] == 2) GPSpos$temp.kmeans[i] = 2
+  else if(temp.kmeans[i] == 3) GPSpos$temp.kmeans[i] = 1
+  else if(temp.kmeans[i] == 4) GPSpos$temp.kmeans[i] = 4
+}
+GPSpos$temp.kmeans = as.factor(GPSpos$temp.kmeans)
+```
+
+```{r, echo=F}
+theme_set(theme_cowplot())
+ 
+plot_grid(
+ggplot(as.data.frame(GPSpos), aes(x = GPSpos$Lon, y = GPSpos$Lat, color = GPSpos$temp.hc.wardD)) + 
+  geom_point(size = 5) + scale_color_manual(values = rainbow(4)) + 
+  guides(color= guide_legend(title = "Clusters")) + 
+  ggtitle("HC with 4 groups") +xlab("") + ylab("") + 
+  annotate(geom="text", x=GPSpos$Lon[paris], y=GPSpos$Lat[paris], label="P",color="black", size = 4)+ 
+  annotate(geom="text", x=GPSpos$Lon[reims], y=GPSpos$Lat[reims], label="R",color="black", size = 4)+ 
+  annotate(geom="text", x=GPSpos$Lon[lyon], y=GPSpos$Lat[lyon], label="L",color="black", size = 4)
+,
+ggplot(as.data.frame(GPSpos), aes(x = GPSpos$Lon, y = GPSpos$Lat, color = GPSpos$temp.kmeans)) + 
+  geom_point(size = 5)+ scale_color_manual(values = rainbow(4)) + 
+  guides(color= guide_legend(title = "Clusters")) + 
+  ggtitle("k-means with 4 groups") + xlab("") + ylab("") + 
+  annotate(geom="text", x=GPSpos$Lon[paris], y=GPSpos$Lat[paris], label="P",color="black", size = 4)+ 
+  annotate(geom="text", x=GPSpos$Lon[reims], y=GPSpos$Lat[reims], label="R",color="black", size = 4)+ 
+  annotate(geom="text", x=GPSpos$Lon[lyon], y=GPSpos$Lat[lyon], label="L",color="black", size = 4)
+)
+
+```
+
+First, its important to notice that, by clustering with the temperature, we don't get the same results than clustering with wind. It seems like clustering this way, the algorithms were able to notice small details in the France landscape. For example, if we look at cluster 4, we can see that it found a Lyon-Marseille line, which is contained between two moutainous areas. Those areas are indeed contained in the cluster 3 chosen by HC algorithm. Moreover, we can notice that, the cities we choose, Paris and Reims, are now assiocated with the same cluster while they were not before.
+
+```{r, echo=F, results='hide'}
+t.cities.kmeans = c(GPSpos$temp.kmeans[paris],GPSpos$temp.kmeans[reims],GPSpos$temp.kmeans[lyon])
+t.cities.HC = c(GPSpos$temp.hc.wardD[paris],GPSpos$temp.hc.wardD[reims],GPSpos$temp.hc.wardD[lyon])
+rbind(cities, t.cities.kmeans, t.cities.HC)
+```
+
+## 2.2 Principal Compenent Analysis
+
+We want to extract the most important features in order to perform the same clustering algorithms than above on a smallest dataset. 
+
+```{r, echo=F, results='hide'}
+res.pca.temp = PCA(Temp, graph = F)
+```
+
+```{r, echo=F}
+eig.val.temp = get_eigenvalue(res.pca.temp)
+p95 = which(eig.val.temp[,3]>95)
+ggplot(as.data.frame(eig.val.temp), aes(x = 1:length(eig.val.temp[,3]), y = eig.val.temp[,3])) + geom_point() +
+  xlab("Number of component") + ylab("% of variance explained") +
+  geom_vline(xintercept = p95[1], color = "red") + theme_bw()+
+  ggtitle("Cumulative curve of variance \n explained by the PCA on the temperature raw data")+
+  annotate(geom = "text", y = -10, x = p95[1]+5, label = p95[1])
+```
+In order to get $95\%$ of the variance explained we have to keep te first 22 principal components. 
+
+```{r}
+print(eig.val.temp[1:10,3])
+```
+
+## 2.3 Clustering on the PCA 
+
+If we kept 10 components we'd get $90.59 \%$ of explained variance.
+
+### Hierarchical Clustering
+
+Since we used the PCA function from the FactoMineR package, it's easier to also use a fonction from this package to performe the Hierarchical Clustering : the HCPC function. 
+
+```{r echo=F, results='hide'}
+temp.hc.wardD.pca = HCPC(PCA(Temp, ncp = 10, graph = F, scale.unit = F), nb.clust = 4, method = "ward", graph = F)
+GPSpos$temp.hc.wardD.pca =  temp.hc.wardD.pca$data.clust[,8761]
+```
+Again, we have to make sure that the figures used for the clusters are the "same" for the HC algorithm on the PCA.
+
+```{r echo=F, results='hide'}
+GPSpos$temp.hc.wardD.pca.bis = NULL
+for(i in 1:259){
+  if(GPSpos$temp.hc.wardD.pca[i] == 4)
+    GPSpos$temp.hc.wardD.pca.bis[i] = 4
+  else if(GPSpos$temp.hc.wardD.pca[i] == 3)
+    GPSpos$temp.hc.wardD.pca.bis[i] = 1
+  if(GPSpos$temp.hc.wardD.pca[i] == 2)
+    GPSpos$temp.hc.wardD.pca.bis[i] = 2
+  if(GPSpos$temp.hc.wardD.pca[i] == 1)
+    GPSpos$temp.hc.wardD.pca.bis[i] = 3
+}
+GPSpos$temp.hc.wardD.pca.bis = as.factor(GPSpos$temp.hc.wardD.pca.bis)
+```
+
+```{r}
+table(PCA = GPSpos$temp.hc.wardD.pca.bis, "raw data" = GPSpos$temp.hc.wardD)
+```
+
+Since we only kept the first 10 components, the results of the two clusterings (on the raw data and on the results of the PCA) can not be the same.
+
+```{r, echo=F}
+plot_grid(
+ggplot(as.data.frame(GPSpos), aes(x = GPSpos$Lon, y = GPSpos$Lat, color = GPSpos$temp.hc.wardD.pca.bis)) + 
+  geom_point(size = 5) + scale_color_manual(values = rainbow(4)) + 
+  guides(color= guide_legend(title = "Clusters")) + 
+  ggtitle("HC on the PCA results (ncp = 10)") +xlab("") + ylab("") + 
+  annotate(geom="text", x=GPSpos$Lon[paris], y=GPSpos$Lat[paris], label="P",color="black", size = 5)+ 
+  annotate(geom="text", x=GPSpos$Lon[reims], y=GPSpos$Lat[reims], label="R",color="black", size = 5)+ 
+  annotate(geom="text", x=GPSpos$Lon[lyon], y=GPSpos$Lat[lyon], label="L",color="black", size = 5)
+,
+ggplot(as.data.frame(GPSpos), aes(x = GPSpos$Lon, y = GPSpos$Lat, color = GPSpos$temp.hc.wardD)) + 
+  geom_point(size = 5) + scale_color_manual(values = rainbow(4)) + 
+  guides(color= guide_legend(title = "Clusters")) + 
+  ggtitle("HC on the raw data") +xlab("") + ylab("") + 
+  annotate(geom="text", x=GPSpos$Lon[paris], y=GPSpos$Lat[paris], label="P",color="black", size = 5)+ 
+  annotate(geom="text", x=GPSpos$Lon[reims], y=GPSpos$Lat[reims], label="R",color="black", size = 5)+ 
+  annotate(geom="text", x=GPSpos$Lon[lyon], y=GPSpos$Lat[lyon], label="L",color="black", size = 5)
+)
+```
+
+Even though we reduced the dimension of the data set through PCA, we still get a lot of information with HC. Our cities are not in the same clusters on the two maps but we still get most of the information, and the clusters are still the same:
+* Cluster 1: North-West part of France, with oceanic climate
+* Cluster 2: East-Central part of France, with continental climate
+* Cluster 3: Moutainous area of France (Massif central, Alpes, Pyrénnées)
+* Cluster 4: Southest part of France, mostly close to the coasts
+
+
+
+## 2.4 Clustering using model based
+
+```{r, echo=F, results='hide'}
+library(mclust)
+```
+
+In this section we intend to compute a segmentation of the temperature time series , based on the PCA representation keeping only 10 principal components using a model based clustering method.
+
+Mclust function from the mclust package compute model-based clustering based on parameterized finite Gaussian mixture models. 
+This function allows us to make several hypothesis on the variance covariance matrix of the data.
+
+In this work, 4 assumptions will be studied:
+* spherical model with equal volume : "EII"
+* spherical model with unequal volume : "VII"
+* diagonal, varying volume and shape : "VVI"
+* ellipsoidal, varying volume, shape, and orientation : "VVV"
+
+
+### Assumption 1: Spherical model with equal volume
+```{r, echo=F, results='hide'}
+pca_temp = PCA(Temp, ncp = 10, graph = F, scale.unit = F)$ind$coord[,1:10]
+dim(pca_temp)
+```
+
+```{r}
+mclust_EII = Mclust(pca_temp, modelNames="EII", G=1:15)
+```
+
+```{r, echo=F, results='hide'}
+plot(mclust_EII$BIC, legend=FALSE)
+abline(v = mclust_EII$G)
+table(mclust_EII$classification)
+GPSpos$mclust.EII = as.factor(mclust_EII$classification)
+```
+```{r, echo=F}
+ggplot(as.data.frame(GPSpos), aes(x = GPSpos$Lon, y = GPSpos$Lat, color = GPSpos$mclust.EII)) + 
+  geom_point(size = 5) + scale_color_manual(values = rainbow(14)) + 
+  guides(color= guide_legend(title = "Clusters")) + 
+  ggtitle("Model-based clustering: spherical model with equal volume") +xlab("") + ylab("") + 
+  annotate(geom="text", x=GPSpos$Lon[paris], y=GPSpos$Lat[paris], label="P",color="black", size = 5)+ 
+  annotate(geom="text", x=GPSpos$Lon[reims], y=GPSpos$Lat[reims], label="R",color="black", size = 5)+ 
+  annotate(geom="text", x=GPSpos$Lon[lyon], y=GPSpos$Lat[lyon], label="L",color="black", size = 5)
+```
+
+
+
+### Assumption 2: Spherical model with unequal volume
+```{r, results='hide'}
+mclust_VII = Mclust(pca_temp, modelNames="VII", G=1:15)
+table(mclust_VII$classification)
+GPSpos$mclust.VII = as.factor(mclust_VII$classification)
+```
+```{r, echo=F}
+ggplot(as.data.frame(GPSpos), aes(x = GPSpos$Lon, y = GPSpos$Lat, color = GPSpos$mclust.VII)) + 
+  geom_point(size = 5) + scale_color_manual(values = rainbow(mclust_VII$G)) + 
+  guides(color= guide_legend(title = "Clusters")) + 
+  ggtitle("Model-based clustering: Spherical model with unequal volume") +xlab("") + ylab("") + 
+  annotate(geom="text", x=GPSpos$Lon[paris], y=GPSpos$Lat[paris], label="P",color="black", size = 5)+ 
+  annotate(geom="text", x=GPSpos$Lon[reims], y=GPSpos$Lat[reims], label="R",color="black", size = 5)+ 
+  annotate(geom="text", x=GPSpos$Lon[lyon], y=GPSpos$Lat[lyon], label="L",color="black", size = 5)
+```
+
+### Assumption 3: Diagonal, varying volume and shape
+```{r results='hide'}
+mclust_VVI = Mclust(pca_temp, modelNames="VVI", G=1:15)
+table(mclust_VVI$classification)
+GPSpos$mclust.VVI = as.factor(mclust_VVI$classification)
+```
+```{r, echo=F}
+ggplot(as.data.frame(GPSpos), aes(x = GPSpos$Lon, y = GPSpos$Lat, color = GPSpos$mclust.VVI)) + 
+  geom_point(size = 5) + scale_color_manual(values = rainbow(mclust_VVI$G)) + 
+  guides(color= guide_legend(title = "Clusters")) + 
+  ggtitle("Model-based clustering: Diagonal, varying volume and shape") +xlab("") + ylab("") + 
+  annotate(geom="text", x=GPSpos$Lon[paris], y=GPSpos$Lat[paris], label="P",color="black", size = 5)+ 
+  annotate(geom="text", x=GPSpos$Lon[reims], y=GPSpos$Lat[reims], label="R",color="black", size = 5)+ 
+  annotate(geom="text", x=GPSpos$Lon[lyon], y=GPSpos$Lat[lyon], label="L",color="black", size = 5)
+```
+
+### Assumption 4: Our own :
+```{r, results='hide'}
+mclust_VVV = Mclust(pca_temp, modelNames="VEE", G=1:15)
+table(mclust_VVI$classification)
+GPSpos$mclust.VVV = as.factor(mclust_VVV$classification)
+```
+
+```{r, echo=F}
+ggplot(as.data.frame(GPSpos), aes(x = GPSpos$Lon, y = GPSpos$Lat, color = GPSpos$mclust.VVV)) + 
+  geom_point(size = 5) + scale_color_manual(values = rainbow(mclust_VVV$G)) + 
+  guides(color= guide_legend(title = "Clusters")) + 
+  ggtitle("Model-based clustering: Ellipsoidal, varying volume, \n shape, and orientation") +xlab("") + ylab("") + 
+  annotate(geom="text", x=GPSpos$Lon[paris], y=GPSpos$Lat[paris], label="P",color="black", size = 5)+ 
+  annotate(geom="text", x=GPSpos$Lon[reims], y=GPSpos$Lat[reims], label="R",color="black", size = 5)+ 
+  annotate(geom="text", x=GPSpos$Lon[lyon], y=GPSpos$Lat[lyon], label="L",color="black", size = 5)
+```
+
+# 4. Clustering using spectral clustering
+```{r, echo=F, results='hide'}
+library(kernlab)
+```
+
+We tried to chose the adequate number of clusters to our data with the within-cluster sum of squares for each cluster (`withinss`), but it keeps decreasing as the number of clusters chosen. We'd need an other argument to make such a choice. So we choose a number of cluster that make decrease `withinss` enough without having too much clusters.
+
+```{r, echo=F}
+specc_temp = specc(pca_temp, centers= 8)
+GPSpos$specc_temp = as.factor(specc_temp@.Data)
+
+ggplot(as.data.frame(GPSpos), aes(x = GPSpos$Lon, y = GPSpos$Lat, color = GPSpos$specc_temp)) + 
+  geom_point(size = 5) + scale_color_manual(values = rainbow(10)) + 
+  guides(color= guide_legend(title = "Clusters")) + 
+  ggtitle("") +xlab("") + ylab("") + 
+  annotate(geom="text", x=GPSpos$Lon[paris], y=GPSpos$Lat[paris], label="P",color="black", size = 5)+ 
+  annotate(geom="text", x=GPSpos$Lon[reims], y=GPSpos$Lat[reims], label="R",color="black", size = 5)+ 
+  annotate(geom="text", x=GPSpos$Lon[lyon], y=GPSpos$Lat[lyon], label="L",color="black", size = 5)
+```
+
+# 5. Wind and Temp variables at the same time
+
+
+```{r, echo=F}
+rm(list =ls())
+load("weatherdata.Rdata")
+wind = as.data.frame(Wind)
+temp = as.data.frame(Temp)
+```
+
+# Our 3 cities
+
+```{r}
+ParisLat = 48.51
+ParisLong = 2.20
+
+ReimsLat = 49.25
+ReimsLong = 4.03
+
+LyonLat = 45.75
+LyonLong = 4.9
+```
+```{r}
+distToParis = (GPSpos$Lon-ParisLong)^2 + (GPSpos$Lat-ParisLat)^2
+distToReims = (GPSpos$Lon-ReimsLong)^2 + (GPSpos$Lat-ReimsLat)^2
+distToLyon = (GPSpos$Lon-LyonLong)^2 + (GPSpos$Lat-LyonLat)^2
+
+paris = which.min(distToParis)
+reims = which.min(distToReims)
+lyon = which.min(distToLyon)
+```
+## First approach: separated PCA
+
+Our first approach in the segmentation of the french territory with both variables was to perform two PCA, one on each of the variable separately. Then we apply k-means and HC to the juncture of all principal components we kept from our PCAs.
+
+```{r, echo=F}
+library(FactoMineR)
+library(cowplot)
+scaled_wind = as.data.frame(scale(wind, center = T, scale = T))
+wind.pca = PCA(scaled_wind, scale.unit = F, graph = F)
+scaled_temp = as.data.frame(scale(temp, center = T, scale = T))
+temp.pca = PCA(scaled_temp, scale.unit = F, graph = F )
+
+eig.val.wind = get_eigenvalue(wind.pca)
+p95.w = which(eig.val.wind[,3]>95)
+eig.val.temp = get_eigenvalue(temp.pca)
+p95.t = which(eig.val.temp[,3]>95)
+
+plot_grid(
+ggplot(as.data.frame(eig.val.wind), aes(x = 1:length(eig.val.wind[,3]), y = eig.val.wind[,3])) + geom_point() +
+  xlab("Number of component") + ylab("% of variance explained") +
+  geom_vline(xintercept = p95.w[1], color = "red") + theme_bw()+
+  ggtitle("Cumulative curve of variance \n explained by the PCA on the \n Wind raw data (centered and scaled)")+
+  annotate(geom = "text", y = -10, x = p95.w[1]+5, label = p95.w[1])
+,
+ggplot(as.data.frame(eig.val.temp), aes(x = 1:length(eig.val.temp[,3]), y = eig.val.temp[,3])) + geom_point() +
+  xlab("Number of component") + ylab("% of variance explained") +
+  geom_vline(xintercept = p95.t[1], color = "red") + theme_bw()+
+  ggtitle("Cumulative curve of variance \n explained by the PCA on the \n temperature raw data (centered and scaled)")+
+  annotate(geom = "text", y = -10, x = p95.t[1]+5, label = p95.t[1])
+)
+```
+So, we choose to keep de 47 first components on the wind data and the 22 first on the temperature data.
+```{r, echo=F, results='hide'}
+wind.pca.1 = PCA(scaled_wind, scale.unit = F, graph = F, ncp = 47)
+temp.pca.1 = PCA(scaled_temp, scale.unit = F, graph = F, ncp = 22)
+data.pca.1 = cbind(wind.pca.1$ind$coord, temp.pca.1$ind$coord)
+dim(data.pca.1)
+```
+
+```{r, echo=F, results='hide'}
+tot_with1 = NULL
+for(k in 1:10){
+  tot_with1[k] = kmeans(data.pca.1, centers = k, nstart = 100)$tot.withinss
+}
+```
+
+```{r, echo=F}
+kmeans.pca.1 = kmeans(data.pca.1, centers = 7, nstart = 100)
+GPSpos$kmeans.pca.1 = as.factor(kmeans.pca.1$cluster)
+```
+
+```{r, echo=F, results='hide'}
+hc.pca.1 = hclust(dist(data.pca.1, "euclidian"), method = "ward.D")
+GPSpos$hc.pca.1 = as.factor(cutree(hc.pca.1, 7))
+inertia.hc.pca.1 = sort(hc.pca.1$height, decreasing = TRUE)
+```
+
+```{r}
+par(mfrow = c(1,2))
+plot(tot_with1, type = "b", xlab = "Number of clusters - kmeans", ylab="Inertia within-cluster")
+points(c(6,7), tot_with1[c(6,7)], col = c("blue","red"), cex = 2, lwd = 3)
+plot(inertia.hc.pca.1[1:20], type = "b", xlab = "Number of clusters - Hierarchical Clustering", ylab = "Inertia within cluster")
+points(c(6,7), inertia.hc.pca.1[c(6,7)], col = c("blue","red"), cex = 2, lwd = 3)
+```
+The last big gap of inertia is between 5 and 6 clusters. We choose 7 clusters for each algorithm to be able to compare their clusters.
+
+## Displaying the maps
+
+```{r, echo=F}
+library(cowplot)
+ theme_set(theme_cowplot())
+plot_grid(
+ggplot(as.data.frame(GPSpos), aes(x = GPSpos$Lon, y = GPSpos$Lat, color = GPSpos$kmeans.pca.1)) + 
+  geom_point(size = 5) + scale_color_manual(values = rainbow(7)) + 
+  guides(color= guide_legend(title = "Clusters")) + 
+  ggtitle("K-means") +xlab("") + ylab("") + 
+  annotate(geom="text", x=GPSpos$Lon[paris], y=GPSpos$Lat[paris], label="P",color="black", size = 4)+ 
+  annotate(geom="text", x=GPSpos$Lon[reims], y=GPSpos$Lat[reims], label="R",color="black", size = 4)+ 
+  annotate(geom="text", x=GPSpos$Lon[lyon], y=GPSpos$Lat[lyon], label="L",color="black", size = 4)
+,
+ggplot(as.data.frame(GPSpos), aes(x = GPSpos$Lon, y = GPSpos$Lat, color = GPSpos$hc.pca.1)) + 
+  geom_point(size = 5)+ scale_color_manual(values = rainbow(7)) + 
+  guides(color= guide_legend(title = "Clusters")) + 
+  ggtitle("Hierarchical Clustering")+xlab("") + ylab("")+ 
+  annotate(geom="text", x=GPSpos$Lon[paris], y=GPSpos$Lat[paris], label="P",color="black", size = 4)+ 
+  annotate(geom="text", x=GPSpos$Lon[reims], y=GPSpos$Lat[reims], label="R",color="black", size = 4)+ 
+  annotate(geom="text", x=GPSpos$Lon[lyon], y=GPSpos$Lat[lyon], label="L",color="black", size = 4)
+)
+
+```
+We can again find our previous clusters but with more precision as there is more clusters. Each one of them is associated with a special part of the French landscape such as, meditarrean coasts, Alpes, the Channel (La Manche) coasts, etc.
+
+
+# Second approach:  Unique PCA
+
+Our second approach was to perfom a PCA on both `wind` and `temp` variables at the same time.
+```{r, echo=F, results='hide'}
+data.pca.2 = as.data.frame(cbind(wind,temp))
+scaled_data.pca.2 = scale(data.pca.2, center = T, scale = T)
+dim(data.pca.2)
+```
+```{r, echo=F, results='hide'}
+pca = PCA(scaled_data.pca.2, scale.unit = F, graph = F)
+```
+```{r, echo=F}
+eig.val = get_eigenvalue(pca)
+p95 = which(eig.val[,3]>95)
+ggplot(as.data.frame(eig.val), aes(x = 1:length(eig.val[,3]), y = eig.val[,3])) + geom_point() +
+  xlab("Number of component") + ylab("% of variance explained") +
+  geom_vline(xintercept = p95[1], color = "red") + theme_bw()+
+  ggtitle("Cumulative curve of variance \n explained by the PCA on the \n Wind and Temperature raw data (centered and scaled)")+
+  annotate(geom = "text", y = -10, x = p95[1]+5, label = p95[1])
+```
+
+In order to have 95$\%$ of variance explained we'd have to keep the first 40 components of our PCA.
+
+
+```{r, echo=F, results='hide'}
+res.pca = PCA(scaled_data.pca.2, scale.unit = F, graph = F, ncp = 40)
+```
+
+
+```{r, echo=F, results='hide'}
+## k-means
+tot_with2 = NULL
+for(k in 1:10){
+  tot_with2[k] = kmeans(res.pca$ind$coord, centers = k, nstart = 100)$tot.withinss
+}
+```
+
+```{r, echo=F, results='hide'}
+kmeans.pca.2 = kmeans(res.pca$ind$coord, centers = 8 , nstart = 100)
+GPSpos$kmeans.pca.2 = as.factor(kmeans.pca.2$cluster)
+```
+```{r}
+## HC
+hc.pca.2 = hclust(dist(res.pca$ind$coord, "euclidian"), method = "ward.D")
+GPSpos$hc.pca.2 = as.factor(cutree(hc.pca.2, 8))
+inertia.hc.pca.2 = sort(hc.pca.2$height, decreasing = TRUE)
+```
+
+## Results 
+
+```{r, echo=F, results='hide'}
+par(mfrow = c(1,2))
+plot(tot_with2, type = "b", xlab = "Number of clusters - kmeans", ylab = "Inertia within-cluster")
+points(c(8,10), tot_with2[c(8,10)], col = c("blue","red"), cex = 2, lwd = 3)
+plot(inertia.hc.pca.2[1:20], type = "b", xlab = "Number of clusters - Hierarchical Clustering", ylab = "Inertia within-cluster")
+points(c(8,10), inertia.hc.pca.2[c(8,10)], col = c("blue","red"), cex = 2, lwd = 3)
+```
+When we perform a PCA on the aggregated data of `wind` and `temp`, the number of clusters is increasing to 10 but to keep the results simple and interpretable we keep only 8 clusters.
+
+```{r, , echo=F}
+library(cowplot)
+ theme_set(theme_cowplot())
+plot_grid(
+ggplot(as.data.frame(GPSpos), aes(x = GPSpos$Lon, y = GPSpos$Lat, color = GPSpos$kmeans.pca.2)) + 
+  geom_point(size = 5) + scale_color_manual(values = rainbow(8)) + 
+  guides(color= guide_legend(title = "Clusters")) + 
+  ggtitle("K-means") +xlab("") + ylab("") + 
+  annotate(geom="text", x=GPSpos$Lon[paris], y=GPSpos$Lat[paris], label="P",color="black", size = 4)+ 
+  annotate(geom="text", x=GPSpos$Lon[reims], y=GPSpos$Lat[reims], label="R",color="black", size = 4)+ 
+  annotate(geom="text", x=GPSpos$Lon[lyon], y=GPSpos$Lat[lyon], label="L",color="black", size = 4)
+,
+ggplot(as.data.frame(GPSpos), aes(x = GPSpos$Lon, y = GPSpos$Lat, color = GPSpos$hc.pca.2)) + 
+  geom_point(size = 5)+ scale_color_manual(values = rainbow(8)) + 
+  guides(color= guide_legend(title = "Clusters")) + 
+  ggtitle("Hierarchical Clustering")+xlab("") + ylab("")+ 
+  annotate(geom="text", x=GPSpos$Lon[paris], y=GPSpos$Lat[paris], label="P",color="black", size = 4)+ 
+  annotate(geom="text", x=GPSpos$Lon[reims], y=GPSpos$Lat[reims], label="R",color="black", size = 4)+ 
+  annotate(geom="text", x=GPSpos$Lon[lyon], y=GPSpos$Lat[lyon], label="L",color="black", size = 4)
+)
+
+```
+
+# Third approach: Mean per year
+Our third approach was to replace the varibles at our disposition by their means, in order to know is only the annual wind force and temperature was enough information to perform a correct segmentation of a territory.
+```{r, , echo=F, results='hide'}
+wind1 = rowMeans(wind)
+temp1 = rowMeans(temp)
+df1 = data.frame(lat = GPSpos$Lat, long = GPSpos$Lon ,wind = wind1, temp = temp1)
+dim(df1)
+```
+
+```{r, echo=F, results='hide'} 
+##k-means
+tot_with3 = NULL
+for(k in 1:10){
+  tot_with3[k] = kmeans(df1[,c("wind","temp")], centers = k, nstart = 100)$tot.withinss
+}
+```
+
+```{r, echo=F, results='hide'}
+kmeans.year = kmeans(res.pca$ind$coord, centers = 7 , nstart = 100)
+
+GPSpos$kmeans.year = as.factor(kmeans.year$cluster)
+```
+
+```{r, echo=F, results='hide'}
+## HC
+hc.year = hclust(dist(df1[,c("wind","temp")], "euclidian"), method = "ward.D")
+GPSpos$hc.year = as.factor(cutree(hc.year, 7))
+inertia.hc.year = sort(hc.year$height, decreasing = TRUE)
+```
+
+```{r, echo=F, results='hide'}
+par(mfrow = c(1,2))
+plot(tot_with3, type = "s", xlab = "Number of clusters", ylab = "Inertia within-cluster")
+points(7, tot_with3[7], col = c("blue"), cex = 2, lwd = 3)
+plot(inertia.hc.year[1:20], type = "s", xlab = "Number of clusters", ylab = "Inertia within-cluster")
+points(7, inertia.hc.year[7], col = c("blue"), cex = 2, lwd = 3)
+```
+
+With the same argument as our other approaches we choose to keep 7 clusters in this approach.
+
+```{r, , echo=F}
+library(cowplot)
+ theme_set(theme_cowplot())
+plot_grid(
+ggplot(as.data.frame(GPSpos), aes(x = GPSpos$Lon, y = GPSpos$Lat, color = GPSpos$kmeans.year)) + 
+  geom_point(size = 5) + scale_color_manual(values = rainbow(7)) + 
+  guides(color= guide_legend(title = "Clusters")) + 
+  ggtitle("K-means") +xlab("") + ylab("") + 
+  annotate(geom="text", x=GPSpos$Lon[paris], y=GPSpos$Lat[paris], label="P",color="black", size = 4)+ 
+  annotate(geom="text", x=GPSpos$Lon[reims], y=GPSpos$Lat[reims], label="R",color="black", size = 4)+ 
+  annotate(geom="text", x=GPSpos$Lon[lyon], y=GPSpos$Lat[lyon], label="L",color="black", size = 4)
+,
+ggplot(as.data.frame(GPSpos), aes(x = GPSpos$Lon, y = GPSpos$Lat, color = GPSpos$hc.year)) + 
+  geom_point(size = 5)+ scale_color_manual(values = rainbow(7)) + 
+  guides(color= guide_legend(title = "Clusters")) + 
+  ggtitle("Hierarchical Clustering")+xlab("") + ylab("")+ 
+  annotate(geom="text", x=GPSpos$Lon[paris], y=GPSpos$Lat[paris], label="P",color="black", size = 4)+ 
+  annotate(geom="text", x=GPSpos$Lon[reims], y=GPSpos$Lat[reims], label="R",color="black", size = 4)+ 
+  annotate(geom="text", x=GPSpos$Lon[lyon], y=GPSpos$Lat[lyon], label="L",color="black", size = 4)
+)
+
+```
+
+We obtain two clearly different results there. On one hand, k-means gives us clusters that are similar as the ones we got before, and, on the other hand, Hierarchical Clustering gives us some new clusters. But we can still find information we already had, such as cluster 6 which is Alpes.
+
+# Fourth approach: Mean per season
+
+In our fourth and last approach, rather than doing a raw mean of the data we decided to separate the data by seasonand then apply this mean. So we now have $n=8$ variables which are mean `wind` and mean `temp` in the four seasons.
+
+```{r, echo=F, results='hide'}
+W.H = rowMeans(wind[,1:2190])
+W.P = rowMeans(wind[,2191:4380])
+W.E = rowMeans(wind[,4381:6570])
+W.A = rowMeans(wind[,6571:8760])
+wind2 = as.data.frame(cbind(W.H,W.P,W.E,W.A))
+```
+
+```{r, echo=F, results='hide'}
+T.H = rowMeans(temp[,1:2190])
+T.P = rowMeans(temp[,2191:4380])
+T.E = rowMeans(temp[,4381:6570])
+T.A = rowMeans(temp[,6571:8760])
+temp2 = as.data.frame(cbind(T.H,T.P,T.E,T.A))
+```
+```{r}
+df2 = data.frame(long = GPSpos$Lon, lat = GPSpos$Lat, W.H = W.H, W.P = W.P, W.E = W.E, W.A = W.A, T.H = T.H, T.P = T.P, T.E = T.E, T.A = T.A)
+dim(df2)
+```
+```{r}
+## k-means
+tot_with4 = NULL
+for(k in 1:10){
+  tot_with4[k] = kmeans(df2[,c("W.H","W.P","W.E","W.A","T.H","T.P","T.E","T.A")], centers = k, nstart = 100)$tot.withinss
+}
+#plot(tot_with4, type = "b")
+```
+
+```{r, echo=F, results='hide'}
+kmeans.season = kmeans(df2[,c("W.H","W.P","W.E","W.A","T.H","T.P","T.E","T.A")], centers = 8 , nstart = 100)
+
+GPSpos$kmeans.season = as.factor(kmeans.season$cluster)
+```
+ 
+
+```{r, echo=F, results='hide'}
+## HC
+hc.season = hclust(dist(df2[,c("W.H","W.P","W.E","W.A","T.H","T.P","T.E","T.A")], "euclidian"), method = "ward.D")
+GPSpos$hc.season = as.factor(cutree(hc.season,8 ))
+inertia.hc.season = sort(hc.season$height, decreasing = TRUE)
+```
+
+
+```{r, echo=F, results='hide'}
+par(mfrow = c(1,2))
+plot(tot_with4, type = "b")
+points(c(7,8), tot_with4[c(7,8)], col = c("blue","red"), cex = 2, lwd = 3)
+plot(inertia.hc.season[1:20], type = "s", xlab = "Number of clusters", ylab = "Inertia")
+points(c(7,8), inertia.hc.season[c(7,8)], col = c("blue","red"), cex = 2, lwd = 3)
+```
+
+With the same argument as our other approaches we choose to keep 8 clusters in this approach.
+
+## Displaying the maps
+```{r, echo=F}
+library(cowplot)
+ theme_set(theme_cowplot())
+plot_grid(
+ggplot(as.data.frame(GPSpos), aes(x = GPSpos$Lon, y = GPSpos$Lat, color = GPSpos$kmeans.season)) + 
+  geom_point(size = 5) + scale_color_manual(values = rainbow(8)) + 
+  guides(color= guide_legend(title = "Clusters")) + 
+  ggtitle("K-means") +xlab("") + ylab("") + 
+  annotate(geom="text", x=GPSpos$Lon[paris], y=GPSpos$Lat[paris], label="P",color="black", size = 4)+ 
+  annotate(geom="text", x=GPSpos$Lon[reims], y=GPSpos$Lat[reims], label="R",color="black", size = 4)+ 
+  annotate(geom="text", x=GPSpos$Lon[lyon], y=GPSpos$Lat[lyon], label="L",color="black", size = 4)
+,
+ggplot(as.data.frame(GPSpos), aes(x = GPSpos$Lon, y = GPSpos$Lat, color = GPSpos$hc.season)) + 
+  geom_point(size = 5)+ scale_color_manual(values = rainbow(8)) + 
+  guides(color= guide_legend(title = "Clusters")) + 
+  ggtitle("Hierarchical Clustering")+xlab("") + ylab("")+ 
+  annotate(geom="text", x=GPSpos$Lon[paris], y=GPSpos$Lat[paris], label="P",color="black", size = 4)+ 
+  annotate(geom="text", x=GPSpos$Lon[reims], y=GPSpos$Lat[reims], label="R",color="black", size = 4)+ 
+  annotate(geom="text", x=GPSpos$Lon[lyon], y=GPSpos$Lat[lyon], label="L",color="black", size = 4)
+)
+
+```
+
+This last resulst is really interesting. Indeed, by dividing our data in seasons, we tried to give to our k-means and Hierarchical algorithms more precise information, aiming for obtaining more precise clusters. But on one hand for the k-means we got, at least visually, less precise clusters and, on the other hand, hierachical clustering gave "better" results than it did with our previous approach.
+
+
+
+
+
+  
+
